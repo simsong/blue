@@ -254,14 +254,21 @@ def concat_downloaded_objects(obj1, obj2):
     assert os.path.exists(obj1['fname'])
     assert os.path.exists(obj2['fname'])
 
+    temp_fname = obj1['fname'] + "_tmp"
+
     # Concatenate with cat  (it's faster than doing it in Python)
-    subprocess.run(['cat', obj2['fname']], stdout=open(obj1['fname'], 'ab'))
+    subprocess.run(['cat', obj1['fname'], obj2['fname']], stdout=open(temp_fname, 'xb'))
+    assert os.path.exists(temp_fname)
+    os.unlink(obj1['fname'])
+    assert not os.path.exists(obj1['fname'])
+    os.rename(temp_fname, obj1['fname'])
+    assert os.path.exists(obj1['fname'])
 
     # Update obj1
     obj1['Size'] += obj2['Size']
     if 'ETag' in obj1:  # if it had an eTag
         del obj1['ETag']  # it is no longer valid
-    os.unlink(obj2['fname'])  # remove the second file
+    # os.unlink(obj2['fname'])  # remove the second file
     return
 
 

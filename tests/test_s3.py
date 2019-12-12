@@ -11,6 +11,8 @@
 # given that the aws-cli also works
 
 import pytest
+import subprocess
+import tempfile
 from ctools.s3 import *
 
 
@@ -38,6 +40,7 @@ def test_get_aws(monkeypatch):
 
 
 def test_aws_s3api():
+    # monkeypatch get_aws() and test whether aws_s3api runs correctly
     pass
     
 
@@ -67,8 +70,10 @@ def test_delete_object():
 
 
 # TODO: Figure out how to test this
-def test_list_objects(monkeypatch):
-    pass
+def test_list_objects():
+    # Test list_objects when no objects are in the s3 bucket
+
+    # Test list_objects when there are objects in the s3 bucket
 
 
 # TODO: Figure out how to test this
@@ -77,32 +82,16 @@ def test_search_objects():
 
 
 # TODO: Figure out how to test this
-def test_etag():
-    verify1 = {'ETag': 'VERIFICATION'}
-    verify2 = {'ETag': '"VERIFICATION"'}
-    # verify3 = {'ETag': '"VERIFICATION'}
-    assert etag(verify1) == 'VERIFICATION'
-    assert etag(verify2) == 'VERIFICATION'
-
-    # This last one will fail because there is a " in the front, but not the back
-    # assert etag(verify3) == 'VERIFICATION'
-
-
-# TODO: Figure out how to test this
-def test_object_sizes():
-    verify_list = [{'Size': 0},{'Size': 1},{'Size': 2}]
-    assert object_sizes(verify_list) == [0, 1, 2]
-
-
-# TODO: Figure out how to test this
 # NOTE: Is it necessary to test this?
 def test_sum_object_sizes():
-    pass
+    assert sum_object_sizes([{'Size': 1}, {'Size': 1}]) == 2
 
 
-# TODO: Figure out how to test this
 def test_any_object_too_small():
-    pass
+    true_test = [{'Size': -1}]
+    false_test = [{'Size': 1}]
+    assert any_object_too_small(true_test)
+    assert not any_object_too_small(false_test)
 
 
 # TODO: Figure out how to test this
@@ -112,10 +101,31 @@ def test_download_object():
 
 # TODO: Figure out how to test this
 def test_concat_downloaded_objects():
-    pass
+    tf1 = tempfile.NamedTemporaryFile()
+    tf2 = tempfile.NamedTemporaryFile()
 
+    tf1.write(b"TEMP FILE 1")
+    tf2.write(b"TEMP FILE TWO")
+    tf1.seek(0)
+    tf2.seek(0)
+
+    tf1store = tf1.read()
+    tf2store = tf2.read()
+
+    obj1 = {'fname': tf1.name, 'Size': os.path.getsize(tf1.name)}
+    obj2 = {'fname': tf2.name, 'Size': os.path.getsize(tf2.name)}
+
+    print(obj1, obj2)
+    print(tf1store, tf2store)
+
+    concat_downloaded_objects(obj1, obj2)
+
+    concat = tf1.read()
+
+    assert concat == tf1store + tf2store
 
 # TODO: Figure out how to test this
+# NOTE: There's a comment stating that this function needs to be replaced with an s3api function, so not gonna worry about this function yet.
 def test_s3exists():
     pass
 
