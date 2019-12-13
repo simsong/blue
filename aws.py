@@ -1,7 +1,19 @@
 import json
+import logging
 import os
 import subprocess
 import urllib.request
+
+boto_available = False
+
+try:
+    import boto3
+    boto_available = True
+finally:
+    print("Boto3 Status: ", boto_available)
+
+if boto_available:
+    logging.warn("Boto3 is available, please implement it!")
 
 
 ################################################################

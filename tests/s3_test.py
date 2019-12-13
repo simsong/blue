@@ -163,8 +163,14 @@ def test_s3open_iter():
 def test_get_bucket_key():
     INVALID_S3_LOCATION = ""
     assert s3.get_bucket_key("s3://") == ('', '')
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as e:
         s3.get_bucket_key(INVALID_S3_LOCATION)
+        assert e.type() == ValueError
+    
+    assert s3.get_bucket_key("s3://test") == ('test','')
+    assert s3.get_bucket_key("test/key") == ('test','key')
+    assert s3.get_bucket_key("s3://test/key") == ('test','key')
+
 
 
 def test_get_aws():
@@ -289,6 +295,9 @@ def test_concat_downloaded_objects():
 
     concat_compare = tf1store + tf2store
     assert concat == concat_compare
+
+def test_S3File_read():
+    pass
 
 # TODO: Figure out how to test this
 # NOTE: There's a comment stating that this function needs to be replaced with an s3api function, so not gonna worry about this function yet.

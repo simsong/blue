@@ -62,6 +62,16 @@ _encryptionEnabled='encryptionEnabled'
 
 Status='Status'
 
+# Print warning statement if Boto3 is available
+try:
+    import boto3
+    boto_available = True
+finally:
+    print("Boto3 Status: ", boto_available)
+
+if boto_available:
+    logging.warn("Boto3 is available, please implement it!")
+
 
 def show_credentials():
     subprocess.call(['aws','configure','list'])

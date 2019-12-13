@@ -5,7 +5,7 @@ import tempfile
 import sys
 import subprocess
 import time
-
+import logging
 from urllib.parse import urlparse
 
 # 
@@ -28,6 +28,14 @@ debug = False
 READTHROUGH_CACHE_DIR = '/mnt/tmp/s3cache'
 
 AWS_LIST = ['/usr/bin/aws', '/usr/local/bin/aws', '/usr/local/aws/bin/aws']
+boto_available = False
+
+try:
+    import boto3
+    boto_available = True
+finally:
+    print("Boto3 Status: ", boto_available)
+    
 
 
 def get_bucket_key(loc):
@@ -52,6 +60,7 @@ def get_aws():
 
 
 def aws_s3api(cmd, debug=False):
+    """Interface to call the aws cli and gives specific commands"""
     aws = get_aws()
     fcmd = [aws, 's3api', '--output=json'] + cmd
     if debug:
@@ -91,7 +100,11 @@ def aws_s3api(cmd, debug=False):
 def put_object(bucket, key, fname):
     """Given a bucket and a key, upload a file"""
     assert os.path.exists(fname)
-    return aws_s3api(['put-object', '--bucket', bucket, '--key', key, '--body', fname])
+    if boto_available:
+        client = boto3.client('s3')
+        client.upload_file(Bucket=bucket, Key=key, Filename=fname)
+    else:
+        return aws_s3api(['put-object', '--bucket', bucket, '--key', key, '--body', fname])
 
 
 def put_s3url(url, fname):
@@ -104,17 +117,30 @@ def get_object(bucket, key, fname):
     """Given a bucket and a key, download a file"""
     if os.path.exists(fname):
         raise FileExistsError(fname)
-    return aws_s3api(['get-object', '--bucket', bucket, '--key', key, fname])
+
+    if boto_available:
+        client = boto3.client('s3')
+        return client.download_file(Bucket=bucket, Key=key, Filename=fname)
+    else:
+        return aws_s3api(['get-object', '--bucket', bucket, '--key', key, fname])
 
 
 def head_object(bucket, key):
     """Wrap the head-object api"""
-    return aws_s3api(['head-object', '--bucket', bucket, '--key', key])
+    if boto_available:
+        client = boto3.client('s3')
+        return client.head_object(Bucket=bucket, Key=key)
+    else:
+        return aws_s3api(['head-object', '--bucket', bucket, '--key', key])
 
 
 def delete_object(bucket, key):
     """Wrap the delete-object api"""
-    return aws_s3api(['delete-object', '--bucket', bucket, '--key', key])
+    if boto_available:
+        client = boto3.client('s3')
+        return client.delete_object(Bucket=bucket, Key=key)
+    else:
+        return aws_s3api(['delete-object', '--bucket', bucket, '--key', key])
 
 
 PAGE_SIZE = 1000
@@ -123,40 +149,65 @@ MAX_ITEMS = 1000
 
 def list_objects(bucket, prefix=None, limit=None, delimiter=None):
     """Returns a generator that lists objects in a bucket. Returns a list of dictionaries, including Size and ETag"""
+    if boto_available:
+        s3resource = boto3.resource('s3')
+        s3bucket = s3resource.Bucket(bucket)
+        kw_args = {
+            'Prefix': prefix,
+            'Delimiter': delimiter,
+            'MaxKeys': limit
+        }
+        if prefix == None:
+            del kw_args['Prefix']
+        if limit == None:
+            del kw_args['MaxKeys']
+        if delimiter == None:
+            del kw_args['Delimiter']
+        objs = s3bucket.objects.filter(**kw_args)
+        for obj in objs:
+            obj = {
+                "Key": obj.key,
+                "LastModified": obj.last_modified.isoformat(),
+                "Size": obj.size,
+                "StorageClass": obj.storage_class,
+                "Owner": obj.owner,
+                "ETag": obj.e_tag,
+            }
+            yield obj
+    else:
+        # handle the case where an S3 URL is provided instead of a bucket and prefix
+        if bucket.startswith('s3://') and (prefix is None):
+            (bucket, prefix) = get_bucket_key(bucket)
 
-    # handle the case where an S3 URL is provided instead of a bucket and prefix
-    if bucket.startswith('s3://') and (prefix is None):
-        (bucket, prefix) = get_bucket_key(bucket)
+        next_token = None
+        total = 0
+        while True:
+            cmd = ['list-objects-v2', '--bucket', bucket, '--prefix', prefix,
+                '--page-size', str(PAGE_SIZE), '--max-items', str(MAX_ITEMS)]
+            if delimiter:
+                cmd += ['--delimiter', delimiter]
+            if next_token:
+                cmd += ['--starting-token', next_token]
 
-    next_token = None
-    total = 0
-    while True:
-        cmd = ['list-objects-v2', '--bucket', bucket, '--prefix', prefix,
-               '--page-size', str(PAGE_SIZE), '--max-items', str(MAX_ITEMS)]
-        if delimiter:
-            cmd += ['--delimiter', delimiter]
-        if next_token:
-            cmd += ['--starting-token', next_token]
+            res = aws_s3api(cmd)
+            if not res:
+                return
+            if 'Contents' in res:
+                for data in res['Contents']:
+                    yield data
+                    total += 1
+                    if limit and total >= limit:
+                        return
 
-        res = aws_s3api(cmd)
-        if not res:
-            return
-        if 'Contents' in res:
-            for data in res['Contents']:
-                yield data
-                total += 1
-                if limit and total >= limit:
-                    return
-
-            if 'NextToken' not in res:
-                return  # no more!
-            next_token = res['NextToken']
-        elif 'CommonPrefixes' in res:
-            for data in res['CommonPrefixes']:
-                yield data
-            return
-        else:
-            return
+                if 'NextToken' not in res:
+                    return  # no more!
+                next_token = res['NextToken']
+            elif 'CommonPrefixes' in res:
+                for data in res['CommonPrefixes']:
+                    yield data
+                return
+            else:
+                return
 
 
 def search_objects(bucket, prefix=None, *, name, delimiter='/', limit=None, searchFoundPrefixes=True, threads=20):
@@ -179,14 +230,16 @@ def search_objects(bucket, prefix=None, *, name, delimiter='/', limit=None, sear
     def worker():
         while True:
             prefix = q.get()
-            if prefix is None:
-                break
+            print(threading.currentThread(), prefix)
+            # if prefix is None:
+                # break
             found_prefixes = []
             found_names = 0
             for obj in list_objects(bucket, prefix=prefix, delimiter=delimiter):
+                print(obj)
                 if _Prefix in obj:
                     found_prefixes.append(obj[_Prefix])
-                if (_Key in obj) and obj[_Key].split(delimiter)[-1] == name:
+                if (_Key in obj) and name in obj[_Key].split(delimiter)[-1]:
                     if len(ret) < limit:
                         ret.append(obj)
                 if len(ret) > limit:
@@ -243,6 +296,8 @@ def any_object_too_small(sobjs):
 
 def download_object(tempdir, bucket, obj):
     """Given a dictionary that defines an object, download it, and set the fname property to be where it was downloaded"""
+    if boto_available:
+        logging.warn("Boto3 is available, please implement it!")
     if 'fname' not in obj:
         obj['fname'] = tempdir + "/" + os.path.basename(obj['Key'])
         get_object(bucket, obj['Key'], obj['fname'])
@@ -250,6 +305,8 @@ def download_object(tempdir, bucket, obj):
 
 def concat_downloaded_objects(obj1, obj2):
     """Concatenate two downloaded files, delete the second"""
+    if boto_available:
+        logging.warn("Boto3 is available, please implement it!")
     # Make sure both objects exist
     assert os.path.exists(obj1['fname'])
     assert os.path.exists(obj2['fname'])
@@ -276,6 +333,8 @@ class S3File:
     """Open an S3 file that can be seeked. This is done by caching to the local file system."""
 
     def __init__(self, name, mode='rb'):
+        if boto_available:
+            logging.warn("Boto3 is available, please implement it!")
         self.name = name
         self.url = urlparse(name)
         if self.url.scheme != 's3':
@@ -397,6 +456,10 @@ class s3open:
         but it is easier to use the aws cli, since it is present and more likely to work.
         @param fsync - if True and mode is writing, use object-exists to wait for the object to be created.
         """
+
+        if boto_available:
+            logging.warn("Boto3 is available, please implement it!")
+
         if not path.startswith("s3://"):
             raise ValueError("Invalid path: " + path)
 
@@ -471,13 +534,18 @@ class s3open:
 
 def s3exists(path):
     """Return True if the S3 file exists. Should be replaced with an s3api function"""
+    if boto_available:
+        logging.warn("Boto3 is available, please implement it!")
     out = subprocess.Popen(['aws', 's3', 'ls', '--page-size', '10', path],
-                           stdout=subprocess.PIPE, encoding='utf-8').communicate()[0]
+                        stdout=subprocess.PIPE, encoding='utf-8').communicate()[0]
     return len(out) > 0
 
 
 def s3rm(path):
     """Remove an S3 object"""
+    if boto_available:
+        logging.warn("Boto3 is available, please implement it!")
+    
     (bucket, key) = get_bucket_key(path)
     res = aws_s3api(['delete-object', '--bucket', bucket, '--key', key])
     print("res:",type(res))
@@ -486,6 +554,9 @@ def s3rm(path):
 
 
 if __name__ == "__main__":
+    if boto_available:
+        logging.warn("Boto3 is available, please implement it!")
+
     t0 = time.time()
     count = 0
     from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
