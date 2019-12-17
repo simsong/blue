@@ -210,11 +210,11 @@ def list_objects(bucket, prefix=None, limit=None, delimiter=None):
                 return
 
 
-def search_objects(bucket, prefix=None, *, name, delimiter='/', limit=None, searchFoundPrefixes=True, threads=20):
+def mt_list_objects(bucket, prefix=None, * , delimiter='/', limit=None, searchFoundPrefixes=True, threads=20):
     """Search for occurences of a name. Returns a list of all found keys as dictionaries.
     @param bucket - the bucket to search
     @param prefix - the prefix to start with
-    @param name   - the name being searched for
+    @param name   - the name being searched for (NO LONGER IMPLEMENTED)
     @param delimiter - the delimiter that separates names
     @param limit  - the maximum number of names keys to return
     @param searchFoundPrefixes - If true, do not search for prefixes below where name is found.
@@ -333,8 +333,6 @@ class S3File:
     """Open an S3 file that can be seeked. This is done by caching to the local file system."""
 
     def __init__(self, name, mode='rb'):
-        if boto_available:
-            logging.warn("Boto3 is available, please implement it!")
         self.name = name
         self.url = urlparse(name)
         if self.url.scheme != 's3':
@@ -343,8 +341,14 @@ class S3File:
         self.key = self.url.path[1:]
         self.fpos = 0
         self.tf = tempfile.NamedTemporaryFile()
-        cmd = ['aws', 's3api', 'list-objects', '--bucket', self.bucket, '--prefix', self.key, '--output', 'json']
-        data = json.loads(subprocess.Popen(cmd, encoding='utf8', stdout=subprocess.PIPE).communicate()[0])
+        self.cache = None
+        data = None
+        if boto_available:
+            client = boto3.client('s3')
+            data = client.list_objects_v2(Bucket=self.bucket, Prefix=self.key)
+        else:
+            cmd = ['aws', 's3api', 'list-objects', '--bucket', self.bucket, '--prefix', self.key, '--output', 'json']
+            data = json.loads(subprocess.Popen(cmd, encoding='utf8', stdout=subprocess.PIPE).communicate()[0])
         file_info = data['Contents'][0]
         self.length = file_info['Size']
         self.ETag = file_info['ETag']
@@ -360,19 +364,32 @@ class S3File:
         else:
             self.backcache = None
 
+
     def _readrange(self, start, length):
         # This is gross; we copy everything to the named temporary file, rather than a pipe
         # because the pipes weren't showing up in /dev/fd/?
         # We probably want to cache also... That's coming
-        cmd = ['aws', 's3api', 'get-object', '--bucket', self.bucket, '--key', self.key, '--output', 'json',
-               '--range', 'bytes={}-{}'.format(start, start + length - 1), self.tf.name]
-        if debug:
-            print(cmd)
-        data = json.loads(subprocess.Popen(cmd, encoding='utf8', stdout=subprocess.PIPE).communicate()[0])
-        if debug:
+        data = None
+        if boto_available:
+            client = boto3.client('s3')
+            data = client.get_object(
+            Bucket=self.bucket,
+            Key=self.key,
+            Range='bytes={}-{}'.format(start, start + length - 1))
+            raw_data = data['Body'].read()
+            self.cache = raw_data
+            return self.cache
+        else:
+            cmd = ['aws', 's3api', 'get-object', '--bucket', self.bucket, '--key', self.key, '--output', 'json',
+                '--range', 'bytes={}-{}'.format(start, start + length - 1), self.tf.name]
+            if debug:
+                print(cmd)
+            data = json.loads(subprocess.Popen(cmd, encoding='utf8', stdout=subprocess.PIPE).communicate()[0])
             print(data)
-        self.tf.seek(0)  # go to the beginning of the data just read
-        return self.tf.read(length)  # and read that much
+            if debug:
+                print(data)
+            self.tf.seek(0)  # go to the beginning of the data just read
+            return self.tf.read(length)  # and read that much
 
     def __repr__(self):
         return "FakeFile<name:{} url:{}>".format(self.name, self.url)
@@ -423,6 +440,12 @@ class S3File:
             raise RuntimeError("whence={}".format(whence))
         if debug:
             print("   ={}  (self.length={})".format(self.fpos, self.length))
+
+    def seekable(self):
+        return True
+
+    def readable(self):
+        return True
 
     def tell(self):
         return self.fpos
