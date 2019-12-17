@@ -231,8 +231,8 @@ def mt_list_objects(bucket, prefix=None, * , delimiter='/', limit=None, searchFo
         while True:
             prefix = q.get()
             print(threading.currentThread(), prefix)
-            # if prefix is None:
-                # break
+            if prefix is None:
+                break
             found_prefixes = []
             found_names = 0
             for obj in list_objects(bucket, prefix=prefix, delimiter=delimiter):
@@ -556,11 +556,12 @@ class s3open:
 
 
 def s3exists(path):
-    """Return True if the S3 file exists. Should be replaced with an s3api function"""
+    """s3exists takes an S3 URL and returns True if the S3 file exists. Should be replaced with an s3api function"""
     if boto_available:
         logging.warn("Boto3 is available, please implement it!")
     out = subprocess.Popen(['aws', 's3', 'ls', '--page-size', '10', path],
                         stdout=subprocess.PIPE, encoding='utf-8').communicate()[0]
+    print(out)
     return len(out) > 0
 
 
@@ -602,7 +603,7 @@ if __name__ == "__main__":
                 print("{:18,} {}".format(data[_Size], data[_Key]))
                 count += 1
         if args.search:
-            for data in search_objects(bucket, prefix, name=args.search, searchFoundPrefixes=False, threads=args.threads):
+            for data in mt_list_objects(bucket, prefix, searchFoundPrefixes=False, threads=args.threads):
                 print("{:18,} {}".format(data[_Size], data[_Key]))
                 count += 1
     t1 = time.time()

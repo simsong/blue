@@ -8,6 +8,8 @@ import sys
 import tempfile
 import warnings
 
+import boto3
+
 sys.path.append( os.path.join( os.path.dirname(__file__), "../..") )
 
 import ctools.s3 as s3
@@ -39,10 +41,29 @@ def check_connection(timeout=5):
 
 
 @pytest.fixture(scope='function')
-def s3_tempfile():
+def create_temp_file():
+    return tempfile.NamedTemporaryFile()
+
+@pytest.fixture(scope='function')
+def create_temp_dir():
+    return tempfile.mkdtemp()
+
+@pytest.fixture(scope='function')
+def s3_tempfile_noremove():
+    (bucket, key) = s3.get_bucket_key(TEST_S3BUCKET)
+    s3bucket = boto3.resource('s3').Bucket(bucket)
     temp = tempfile.NamedTemporaryFile()
-    # Maybe write out random junk to the file?
-    return temp
+    return s3bucket.put_object(Body=temp.read(), Key=temp.name)
+
+
+@pytest.fixture(scope='function')
+def s3_tempfile_remove():
+    (bucket, key) = s3.get_bucket_key(TEST_S3BUCKET)
+    s3bucket = boto3.resource('s3').Bucket(bucket)
+    temp = tempfile.NamedTemporaryFile()
+    obj = s3bucket.put_object(Body=temp.read(), Key=temp.name)
+    yield obj
+    obj.delete()
 
 
 def test_s3open(check_connection):
@@ -187,63 +208,61 @@ def test_aws_s3api():
     
 
 # TODO: Figure out how to test this
-def test_put_object():
-    # Should raise a type error when when path is None
-    with pytest.raises(TypeError):
-        s3.put_object(TEST_S3ROOT, None, None)
-
-    tf = tempfile.NamedTemporaryFile()
-    print(TEST_S3ROOT, tf.name.split('/')[-1], tf.name)
-    s3.put_object(TEST_S3ROOT, tf.name.split('/')[-1], tf.name)
-
-
-    
+def test_put_object(create_temp_file):
+    (bucket, key) = s3.get_bucket_key(TEST_S3BUCKET)
+    s3bucket = boto3.resource('s3').Bucket(bucket)
+    s3.put_object(bucket, "TEMP_KEY",create_temp_file.name)
+    objs = list(s3bucket.objects.filter(Prefix="TEMP_KEY"))
+    assert len(objs) == 1
+    # Cleanup
+    s3bucket.delete_objects(Delete={
+        "Objects":
+        [{"Key": "TEMP_KEY"}]
+        })
 
 # TODO: Figure out how to test this
-def test_put_s3url(s3_tempfile):
+def test_put_s3url(create_temp_file):
     with pytest.raises(TypeError) as excinfo:
         s3.put_s3url(None, None)
         assert excinfo.type() == TypeError
     with pytest.raises(TypeError) as excinfo:
-        s3.put_s3url(None, s3_tempfile)
+        s3.put_s3url(None, create_temp_file)
         assert excinfo.type() == TypeError
     
-    s3.put_s3url(TEST_S3BUCKET + '/'.join(s3_tempfile.name.split('/')[:-1]), s3_tempfile.name)
+    s3.put_s3url(TEST_S3BUCKET + '/'.join(create_temp_file.name.split('/')[:-1]), create_temp_file.name)
 
     
 
 
 # TODO: Figure out how to test this
-def test_head_object():
-    with pytest.raises(RuntimeError) as excinfo:
-        s3.head_object(None, None)
-        assert excinfo.type() == RuntimeError
-
-    # NOTE: Not sure what this is even supposed to return
-    # but will figure out later
-    s3.head_object(TEST_S3BUCKET, "HEAD_KEY")
-
-
-# TODO: Figure out how to test this
-def test_delete_object():
-    # Make sure there's an object to delete
-    # Try to delete that object
-    # Check that the object was deleted
-    pass
+def test_head_object(s3_tempfile_remove):
+    (bucket, key) = s3.get_bucket_key(TEST_S3BUCKET)
+    key = s3_tempfile_remove.key
+    TEST_HEAD = boto3.client('s3').head_object(Bucket=bucket, Key=key)
+    RES_HEAD = s3.head_object(bucket, key)
+    del TEST_HEAD['ResponseMetadata']
+    del RES_HEAD['ResponseMetadata']
+    assert RES_HEAD == TEST_HEAD
 
 
 # TODO: Figure out how to test this
+def test_delete_object(s3_tempfile_noremove):
+    (bucket, key) = s3.get_bucket_key(TEST_S3BUCKET)
+    s3bucket = boto3.resource('s3').Bucket(bucket)
+    test_obj = s3_tempfile_noremove
+    remove_key = test_obj.key
+    s3.delete_object(bucket, remove_key)
+    objs = list(s3bucket.objects.filter(Prefix=remove_key))
+    assert len(objs) == 0
+
+
 def test_list_objects():
-    # Test list_objects when no objects are in the s3 bucket
-    # Test list_objects when there are objects in the s3 bucket
-    pass
+    s3.list_objects(TEST_S3BUCKET)
 
-# TODO: Figure out how to test this
-def test_search_objects():
-    # Test search_objects with there no are objects in the s3 bucket
-    # Test search_objects with there are objects in the s3 bucket
-    pass
 
+def test_mt_list_objects():
+    # s3.mt_list_objects(TEST_S3BUCKET)
+    pass
 
 def test_sum_object_sizes():
     assert s3.sum_object_sizes([{'Size': 1}, {'Size': 1}]) == 2
@@ -257,8 +276,10 @@ def test_any_object_too_small():
 
 
 # TODO: Figure out how to test this
-def test_download_object():
-    pass
+def test_download_object(create_temp_dir, s3_tempfile_remove):
+    (bucket, key) = s3.get_bucket_key(TEST_S3BUCKET)
+    s3.download_object(create_temp_dir, bucket, {'fname': s3_tempfile_remove.key, 'Key': s3_tempfile_remove.key})
+    assert os.path.exists( os.path.join(create_temp_dir, s3_tempfile_remove.key) )
 
 
 def test_concat_downloaded_objects():
@@ -296,14 +317,9 @@ def test_concat_downloaded_objects():
     concat_compare = tf1store + tf2store
     assert concat == concat_compare
 
-def test_S3File_read():
-    pass
-
-# TODO: Figure out how to test this
-# NOTE: There's a comment stating that this function needs to be replaced with an s3api function, so not gonna worry about this function yet.
-def test_s3exists():
-    assert s3.s3exists("THIS FILE DOES NOT EXIST") == False
-    assert s3.s3exists("THIS FILE SHOULD EXIST") == True
+def test_s3exists(s3_tempfile_remove):
+    assert s3.s3exists("FILE DOES NOT EXIST") == False
+    assert s3.s3exists(TEST_S3BUCKET + '/' + s3_tempfile_remove.key) == True
 
 
 # TODO: Figure out how to test this
